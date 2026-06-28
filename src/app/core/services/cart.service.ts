@@ -1,5 +1,5 @@
-import { Injectable } from '@angular/core';
-import { BehaviorSubject } from 'rxjs';
+import { Injectable, signal, computed, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
 import { CartItem } from '../models/cart-item.model';
 import { Product } from '../models/product.model';
 
@@ -7,66 +7,112 @@ import { Product } from '../models/product.model';
   providedIn: 'root',
 })
 export class CartService {
-  private cartItems: CartItem[] = [];
-  private cartSubject = new BehaviorSubject<CartItem[]>([]);
 
-  cart$ = this.cartSubject.asObservable();
+  private readonly apiUrl = 'http://localhost:3000/cart';
 
-  addToCart(product: Product): void {
-    const existing = this.cartItems.find((item) => item.product.id === product.id);
-    if (existing) {
-      existing.quantity++;
-    } else {
-      this.cartItems.push({ product, quantity: 1 });
-    }
-    this.cartSubject.next([...this.cartItems]);
+  private http = inject(HttpClient);
+
+  cartItems = signal<CartItem[]>([]);
+
+  cartCount = computed(() =>
+    this.cartItems().reduce((sum, item) => sum + item.quantity, 0)
+  );
+
+  totalBeforeDiscount = computed(() =>
+    this.cartItems().reduce(
+      (sum, item) =>
+        sum + item.product.originalPrice * item.quantity,
+      0
+    )
+  );
+
+  totalAfterDiscount = computed(() =>
+    this.cartItems().reduce(
+      (sum, item) =>
+        sum + item.product.price * item.quantity,
+      0
+    )
+  );
+
+  totalSavings = computed(() =>
+    this.totalBeforeDiscount() - this.totalAfterDiscount()
+  );
+
+  loadCart(): void {
+    this.http.get<CartItem[]>(this.apiUrl)
+      .subscribe(items => this.cartItems.set(items));
   }
 
-  removeFromCart(productId: number): void {
-    this.cartItems = this.cartItems.filter((item) => item.product.id !== productId);
-    this.cartSubject.next([...this.cartItems]);
+  addToCart(product: Product): void {
+
+    const existing = this.cartItems()
+      .find(item => item.product.id === product.id);
+
+    if (existing) {
+
+      const updated = {
+        ...existing,
+        quantity: existing.quantity + 1
+      };
+
+      this.http.put<CartItem>(
+        `${this.apiUrl}/${existing.product.id}`,
+        updated
+      ).subscribe(() => this.loadCart());
+
+    } else {
+
+      const item: CartItem = {
+        product,
+        quantity: 1
+      };
+
+      this.http.post<CartItem>(
+        this.apiUrl,
+        item
+      ).subscribe(() => this.loadCart());
+    }
   }
 
   updateQuantity(productId: number, quantity: number): void {
-    const item = this.cartItems.find((i) => i.product.id === productId);
-    if (item) {
-      if (quantity <= 0) {
-        this.removeFromCart(productId);
-      } else {
-        item.quantity = quantity;
-        this.cartSubject.next([...this.cartItems]);
-      }
-    }
+
+    const item = this.cartItems()
+      .find(i => i.product.id === productId);
+
+    if (!item) return;
+
+    const updated = {
+      ...item,
+      quantity
+    };
+
+    this.http.put<CartItem>(
+      `${this.apiUrl}/${productId}`,
+      updated
+    ).subscribe(() => this.loadCart());
+  }
+
+  removeFromCart(productId: number): void {
+    this.http.delete(
+      `${this.apiUrl}/${productId}`
+    ).subscribe(() => this.loadCart());
   }
 
   clearCart(): void {
-    this.cartItems = [];
-    this.cartSubject.next([]);
-  }
 
-  getCartCount(): number {
-    return this.cartItems.reduce((sum, item) => sum + item.quantity, 0);
-  }
+    this.cartItems().forEach(item => {
 
-  getTotalBeforeDiscount(): number {
-    return this.cartItems.reduce(
-      (sum, item) => sum + item.product.originalPrice * item.quantity,
-      0
-    );
-  }
+      this.http.delete(
+        `${this.apiUrl}/${item.product.id}`
+      ).subscribe();
 
-  getTotalAfterDiscount(): number {
-    return this.cartItems.reduce(
-      (sum, item) => sum + item.product.price * item.quantity,
-      0
-    );
-  }
+    });
 
-  getTotalSavings(): number {
-    return this.getTotalBeforeDiscount() - this.getTotalAfterDiscount();
+    this.cartItems.set([]);
   }
 
   isInCart(productId: number): boolean {
-    return this.cartItems.some((item) => item.product.id === productId);
+    return this.cartItems()
+      .some(item => item.product.id === productId);
   }
 }
